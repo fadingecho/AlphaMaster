@@ -5,6 +5,7 @@ model_core/config.py — 模型层配置
 品种、数据、风控等全局配置统一由根目录 config.py 的 Config 类管理。
 """
 import math
+import os
 
 import torch
 from .vocab import FORMULA_VOCAB
@@ -168,3 +169,9 @@ class ModelConfig:
     PARALLEL_EVAL:        bool = False
     EVAL_WORKERS:         int  = 0    # 0=auto (physical cores, cap 8)
     EVAL_INTRA_THREADS:   int  = 0    # 0=auto (physical cores)
+
+
+if os.getenv("ALPHAMASTER_DEMO", "0") == "1":
+    ModelConfig.TRAIN_STEPS = int(os.getenv("ALPHAMASTER_DEMO_STEPS", "80"))
+    ModelConfig.BATCH_SIZE = 32
+    ModelConfig.REWARD_MODE = "standard"

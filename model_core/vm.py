@@ -154,38 +154,34 @@ class StackVM:
     @staticmethod
     def _normalize_output(x: torch.Tensor) -> torch.Tensor:
         """
-        对因子输出做标准化，确保幅度足够触发 neutral band 入场。
+        多股票截面逐日标准化；无可靠差异的截面明确输出中性零。
 
-        策略（两级降级，全部因果）：
-        1. 截面 zscore（跨品种，每时间步）：适合因子跨品种有分散
-        2. 滚动时序 zscore（每品种，固定窗口 500，无 look-ahead）
-
-        P2-8 修复（原 expanding → rolling）：
-        - 原代码用 expanding（累积）z-score：最后一根 bar 的 mean/std 吃全部历史，
-          导致因子值依赖历史长度（300 根 vs 1988 根会漂移甚至变号），
-          实时分析被迫要求 3000 根 bar 等待累积归一化收敛。
-        - 改为滚动 z-score（窗口 500）：最后一根 bar 只依赖最近 500 期，
-          与历史长度无关，实时门槛降至 ~800（特征 warm-up 200 + 归一化 500）。
-        - T < 窗口时退化为 expanding（样本不足时仍因果，无 look-ahead）。
-        - warm-up 期（前 window-1 根）输出 0（因子中性，不出信号）。
-
-        Returns:
-            [N, T] clip 到 [-3, 3]，若是常数则返回原值（engine 会过滤）
+        neutral-zero-v1: 全相同，或极差 <= 8 * 输入精度 epsilon *
+        当日最大绝对值，视为退化截面。该相对阈值不使用其他日期。
+        中心化和样本标准差使用 float64，保留输出 dtype/device。
+        N=1 沿用上游时序分支；本轮 20 股票实验不使用该分支。
         """
         N, T = x.shape
 
-        # 检测是否是全局常数（标准化无意义，x.std() 是统计量非时间依赖）
+        if N > 1:
+            work = x.to(dtype=torch.float64)
+            # First subtract an observed value: an exactly constant column
+            # becomes exact zeros before any floating-point reduction.
+            shifted = work - work[:1, :]
+            centered = shifted - shifted.mean(dim=0, keepdim=True)
+            spread = work.amax(dim=0, keepdim=True) - work.amin(dim=0, keepdim=True)
+            tolerance = 8.0 * torch.finfo(x.dtype).eps * work.abs().amax(dim=0, keepdim=True)
+            std = shifted.std(dim=0, keepdim=True)
+            neutral = (spread <= tolerance) | (std == 0)
+            # A neutral column never divides by a tiny substituted denominator.
+            safe_std = torch.where(neutral, torch.ones_like(std), std)
+            z = torch.where(neutral, torch.zeros_like(centered), centered / safe_std)
+            return z.clamp(-3.0, 3.0).to(dtype=x.dtype)
+
+        # Preserve upstream single-symbol behavior outside this experiment's scope.
         global_std = x.std()
         if global_std < 1e-6:
-            return x   # 常数因子，由 engine 的 const_cnt 拦截
-
-        # ── 截面标准化（跨品种，每时间步；N=1 时跳过）──────────────
-        # cs_std 沿 N 维计算，t 时刻的 cs_std 只用 {x[n, t] : n}，无未来信息
-        if N > 1:
-            cs_mean = x.mean(dim=0, keepdim=True)
-            cs_std  = x.std(dim=0, keepdim=True).clamp(min=1e-8)
-            cs_z    = (x - cs_mean) / cs_std
-            return torch.clamp(cs_z, -3.0, 3.0)
+            return x
 
         # ── 滚动时序标准化（每品种独立，固定窗口，无 look-ahead）─────
         # N=1 时使用滚动 z-score（窗口 500），替代原 expanding z-score。

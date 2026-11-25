@@ -14,7 +14,7 @@ import torch
 # 策略：与 MT5_AlphaGPT 一致——保持 intra_threads=full cores，让 PyTorch 内部
 # 多线程处理大张量；同时开 8 workers 并行评估不同公式。
 # PyTorch 的 intra-op 线程在执行期间会释放 GIL，允许多个 worker 真正并行。
-_PHYS_CORES = os.cpu_count() or 4
+_PHYS_CORES = max(1, int(os.getenv("ALPHAMASTER_CPU_THREADS", str(os.cpu_count() or 4))))
 _EVAL_WORKERS = min(_PHYS_CORES, 8)
 _INTRA = _PHYS_CORES  # 保持满线程，不做 phys // workers
 try:
@@ -629,7 +629,7 @@ class AlphaEngine:
     # ── Main training loop ────────────────────────────────────────────────────
 
     def train(self, start_step: int = 0, end_step: int | None = None,
-              migration_hook=None, verbose_header: bool = True):
+              migration_hook=None, verbose_header: bool = True, step_hook=None):
         if self.data_manager is None:
             raise RuntimeError("AlphaEngine requires a data_manager.")
 
@@ -666,8 +666,10 @@ class AlphaEngine:
 
         # 因果安全：features.py 的 _robust_norm 已改为滚动因果实现
         # 每个 t 的归一化参数只用 [t-w+1..t]，walk-forward 折叠切片无泄露
-        feat  = self.data_manager.feat_tensor.to(ModelConfig.DEVICE)
-        t_ret = self.data_manager.target_ret.to(ModelConfig.DEVICE)
+        # Formula evaluation is independent of policy autograd. Keep its many
+        # small operations on CPU, while policy sampling/backprop uses CUDA.
+        feat  = self.data_manager.feat_tensor.to(getattr(ModelConfig, 'EVAL_DEVICE', ModelConfig.DEVICE))
+        t_ret = self.data_manager.target_ret.to(getattr(ModelConfig, 'EVAL_DEVICE', ModelConfig.DEVICE))
 
         # 数据驱动年化因子：按训练数据的实际时间戳估计每年 bar 数，
         # 替代 MT5Backtest 默认的 H1=6240。A 股日线/15min、加密日线等
@@ -701,8 +703,8 @@ class AlphaEngine:
                                   disable=not sys.stderr.isatty(),
                                   leave=False,
                                   mininterval=5.0)
-        low_entropy_streak = 0
-        prev_init_dist     = None  # 用于计算相邻步分布差异 KL
+        low_entropy_streak = getattr(self, '_low_entropy_streak', 0)
+        prev_init_dist     = getattr(self, '_prev_init_dist', None)
 
         for step in pbar:
             # ── Part A: Sample n_new new formulas ────────────────────
@@ -725,11 +727,12 @@ class AlphaEngine:
                 tok_new.append(a)
                 ent_new.append(d.entropy())
                 inp_new = torch.cat([inp_new, a.unsqueeze(1)], dim=1)
+                sampled_tokens = a.tolist()
                 for b in range(n_new):
-                    sd_new[b] += self.sampler.delta[a[b].item()]
-                    prev_tokens_new[b] = a[b].item()
+                    sd_new[b] += self.sampler.delta[sampled_tokens[b]]
+                    prev_tokens_new[b] = sampled_tokens[b]
                     infected_chain_new[b] = self.sampler.update_infection(
-                        a[b].item(), infected_chain_new[b])
+                        sampled_tokens[b], infected_chain_new[b])
 
             seqs_new = torch.stack(tok_new, dim=1)
 
@@ -801,11 +804,12 @@ class AlphaEngine:
                     lp_elite.append(d_e.log_prob(tk))
                     ent_elite.append(d_e.entropy())
                     inp_e = torch.cat([inp_e, tk.unsqueeze(1)], dim=1)
+                    elite_tokens = tk.tolist()
                     for b in range(ne):
-                        sd_e[b] += self.sampler.delta[tk[b].item()]
-                        prev_tokens_elite[b] = tk[b].item()
+                        sd_e[b] += self.sampler.delta[elite_tokens[b]]
+                        prev_tokens_elite[b] = elite_tokens[b]
                         infected_chain_elite[b] = self.sampler.update_infection(
-                        tk[b].item(), infected_chain_elite[b])
+                        elite_tokens[b], infected_chain_elite[b])
 
 
             # ── Part C: Evaluate all formulas (并行评估) ────────────────
@@ -966,7 +970,7 @@ class AlphaEngine:
 
             self.opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.opt.step()
             if self.use_lord:
                 self.lord_opt.step()
@@ -1049,10 +1053,6 @@ class AlphaEngine:
                     json.dump(strategy_data, fp, indent=2)
 
             self._save_training_history_live()
-
-            if (step + 1) % 20 == 0 or (step + 1) == end_step:
-                ckpt = self.save_checkpoint(step + 1)
-                tqdm.write(f"[检查点] → {ckpt} (最优={self.best_score:.3f})")
 
             # ── Part F: Migration hook（多岛训练时交换精英）────────────
             if migration_hook is not None and (step + 1) % ModelConfig.MIGRATION_INTERVAL == 0:
@@ -1151,6 +1151,27 @@ class AlphaEngine:
                         f"熵={ent_val:.3f} 强噪声={hard_noise:.4f} "
                         f"继续训练，不提前停止"
                     )
+
+            # Snapshot AFTER restart handling, so the checkpoint is the exact
+            # state at the next iteration boundary, including RNG/EMA state.
+            self._low_entropy_streak = low_entropy_streak
+            self._prev_init_dist = prev_init_dist
+            # Observability only: these values do not feed rewards or updates.
+            self._last_train_metrics = {
+                'loss/total': loss.item(),
+                'loss/policy': policy_loss.item(),
+                'optimizer/grad_norm_before_clip': grad_norm.item(),
+                'optimizer/learning_rate': self.opt.param_groups[0]['lr'],
+                'exploration/entropy_coefficient': ent_coeff,
+                'formulas/valid_fraction': ok_cnt / max(1, tot),
+                'formulas/invalid_fraction': none_cnt / max(1, tot),
+                'formulas/constant_fraction': const_cnt / max(1, tot),
+            }
+            if step_hook is not None:
+                step_hook(self, step + 1)
+            elif (step + 1) % 20 == 0 or (step + 1) == end_step:
+                ckpt = self.save_checkpoint(step + 1)
+                tqdm.write(f"[检查点] → {ckpt} (最优={self.best_score:.3f})")
 
         # ── End of training ──────────────────────────────────────────
         # 仅当跑满最终步时才保存最终 strategy 和历史

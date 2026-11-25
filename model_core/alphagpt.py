@@ -221,7 +221,7 @@ class AlphaGPT(nn.Module):
         super().__init__()
         # d_model 64→96：vocab 剪枝后为 ~94，96 维 embedding 足以支撑，
         # 兼顾容量与 CPU 自回归采样的速度（128 维每步耗时过高）。
-        self.d_model = 96
+        self.d_model = getattr(ModelConfig, 'D_MODEL', 96)
         self.features_list = list(FORMULA_VOCAB.feature_names)
         self.ops_list = list(FORMULA_VOCAB.operator_names)
         
@@ -244,9 +244,9 @@ class AlphaGPT(nn.Module):
         # nhead=4 → head_dim=24。
         self.blocks = LoopedTransformer(
             d_model=self.d_model,
-            nhead=4,
-            num_layers=3,
-            dim_feedforward=192,
+            nhead=getattr(ModelConfig, 'N_HEADS', 4),
+            num_layers=getattr(ModelConfig, 'N_LAYERS', 3),
+            dim_feedforward=getattr(ModelConfig, 'D_FF', 192),
             num_loops=3,
             dropout=0.1
         )

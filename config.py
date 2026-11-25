@@ -36,6 +36,8 @@ load_dotenv()
 
 
 class Config:
+    # Local offline A-share demo: positive positions only.
+    A_SHARE_LONG_ONLY = os.getenv("ALPHAMASTER_DEMO", "0") == "1"
     # ── MT5 连接 ──────────────────────────────────────────
     MT5_LOGIN    = int(os.getenv("MT5_LOGIN", "0"))
     MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")

@@ -344,6 +344,9 @@ class MT5Backtest:
         Returns:
             float，惩罚值（负数或零）
         """
+        from config import Config
+        if getattr(Config, "A_SHARE_LONG_ONLY", False):
+            return 0.0
         flat = position.reshape(-1)
         long_ratio = (flat > 0.05).float().mean().item()
         short_ratio = (flat < -0.05).float().mean().item()

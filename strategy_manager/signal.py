@@ -46,6 +46,9 @@ def compute_target_positions(
         prev_positions: 保留参数，连续模式下忽略。
     """
     pos = torch.tanh(factors)
+    from config import Config
+    if getattr(Config, "A_SHARE_LONG_ONLY", False):
+        pos = pos.clamp(min=0.0)
     min_abs = _min_trade_exposure()
     if min_abs > 0:
         pos = torch.where(pos.abs() >= min_abs, pos, torch.zeros_like(pos))

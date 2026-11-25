@@ -126,7 +126,8 @@ class BacktestEngine:
         # numpy 转换（便于后续图表处理）
         factor_np   = factor_1d.detach().float().numpy()
         # 连续仓位模式：tanh 直接作为仓位比例，与训练 backtest.py 完全一致
-        signal_np   = np.tanh(factor_np)
+        from strategy_manager.signal import compute_target_positions_stateless
+        signal_np = compute_target_positions_stateless(factor_1d).detach().float().numpy()
         position_np = signal_np
 
         open_np   = raw_dict["open"].float().numpy()

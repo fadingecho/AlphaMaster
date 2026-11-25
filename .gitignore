@@ -116,3 +116,24 @@ secrets/
 credentials*.json
 local_settings*.json
 ark_rotation_state.json
+
+# Local demo, migration checks and research runs
+.git-rewrite/
+demo/data/
+demo/report/
+demo/mpl-cache/
+demo/*.json
+legacy_engine_comparison/results/
+qmt_migration/*.json
+qmt_migration/*.csv
+experiments/smallcap/data/
+experiments/smallcap/**/results/
+experiments/smallcap/**/tensorboard/
+experiments/smallcap/**/checkpoints/
+experiments/smallcap/**/status.json*
+experiments/smallcap/**/*.pid
+experiments/smallcap/**/*.lock
+experiments/smallcap/**/*.log
+*.db
+*.db-wal
+*.db-shm

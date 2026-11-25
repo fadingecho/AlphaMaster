@@ -309,7 +309,7 @@ class MT5FeatureEngineer:
         pad = torch.zeros(close.shape[0], w - 1, device=close.device, dtype=high.dtype)
         hw = torch.cat([pad, high], dim=1).unfold(1, w, 1).max(dim=-1).values
         lw = torch.cat([pad, low], dim=1).unfold(1, w, 1).min(dim=-1).values
-        willr = (hw - close) / (hw - lw + eps)
+        willr = -(hw - close) / (hw - lw + eps)
         return torch.clamp(willr, -1.0, 0.0)
 
     @staticmethod

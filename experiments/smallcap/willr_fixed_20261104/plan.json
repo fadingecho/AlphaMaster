@@ -1,0 +1,30 @@
+{
+  "normalization_version": "neutral-zero-v1",
+  "steps": 9000,
+  "batch": 192,
+  "seeds": [
+    20261025
+  ],
+  "jobs": [
+    {
+      "arch": "small",
+      "seed": 20261025
+    },
+    {
+      "arch": "large",
+      "seed": 20261025
+    }
+  ],
+  "milestones": [
+    1000,
+    3000,
+    6000,
+    9000
+  ],
+  "checkpoint_interval": 200,
+  "initialization": "fresh; no old model, optimizer, elite pool or factor pool",
+  "primary_selection": "Final candidate pool, highest 2025 Sharpe",
+  "test_label": "2026 previously observed: retrospective reference only",
+  "feature_version": "willr-sign-v1",
+  "execution": "sequential: small training, then large training, then final evaluation"
+}

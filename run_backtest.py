@@ -114,6 +114,11 @@ def _setup_chinese_font() -> None:
     """让 matplotlib 能正确显示中文（Windows 优先微软雅黑）。"""
     from matplotlib import font_manager
 
+    if getattr(Config, "A_SHARE_LONG_ONLY", False):
+        wsl_font = Path("/mnt/c/Windows/Fonts/msyh.ttc")
+        if wsl_font.is_file():
+            font_manager.fontManager.addfont(str(wsl_font))
+
     candidates = [
         "Microsoft YaHei",
         "SimHei",
